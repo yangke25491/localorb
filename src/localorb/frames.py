@@ -126,6 +126,47 @@ def _axis_from_pair(v1: np.ndarray, v2: np.ndarray) -> np.ndarray:
     return _canonical_sign(_unit(_unit(v1) - _unit(v2)))
 
 
+def _automatic_quality_metrics(
+    vectors: list[np.ndarray],
+    pairing_local: tuple[tuple[int, int], ...],
+    axes: list[np.ndarray],
+    mean_dist: list[float],
+    z_idx: int,
+) -> dict[str, object]:
+    unit_vectors = [_unit(v) for v in vectors]
+    pair_cosines = [
+        float(np.dot(unit_vectors[i], unit_vectors[j])) for i, j in pairing_local
+    ]
+    opposition_errors = [1.0 + value for value in pair_cosines]
+
+    raw_axis_dot_products = []
+    for i in range(3):
+        for j in range(i + 1, 3):
+            raw_axis_dot_products.append(float(np.dot(axes[i], axes[j])))
+
+    competing = [float(mean_dist[k]) for k in range(3) if k != z_idx]
+    nearest_competing_distance = min(
+        competing,
+        key=lambda value: abs(value - float(mean_dist[z_idx])),
+    )
+    scale = max(float(np.mean(mean_dist)), 1e-12)
+    z_gap_fraction = abs(float(mean_dist[z_idx]) - nearest_competing_distance) / scale
+
+    return {
+        "pair_cosines": pair_cosines,
+        "pair_opposition_errors": opposition_errors,
+        "max_opposition_error": float(max(opposition_errors)),
+        "raw_axis_dot_products": raw_axis_dot_products,
+        "raw_axis_orthogonality_error": float(
+            max(abs(value) for value in raw_axis_dot_products)
+        ),
+        "selected_z_pair_local_index": int(z_idx),
+        "selected_z_mean_distance": float(mean_dist[z_idx]),
+        "nearest_competing_mean_distance": float(nearest_competing_distance),
+        "z_gap_fraction": float(z_gap_fraction),
+    }
+
+
 def build_local_frame(
     structure: Structure,
     center_index: int,
@@ -140,6 +181,9 @@ def build_local_frame(
     The pair with the largest mean bond length is local z by default, which is
     useful for tetragonally elongated octahedra. The remaining pair most nearly
     orthogonal to z seeds x; Gram-Schmidt and y=z×x enforce orthonormality.
+
+    The frame metadata also records pre-orthogonalization geometry diagnostics so
+    users can detect ambiguous or strongly distorted automatic assignments.
     """
     rows = _candidate_ligands(structure, center_index, ligand, coordination, cutoff)
     if coordination != 6:
@@ -162,6 +206,8 @@ def build_local_frame(
         z_idx = int(np.argmin(mean_dist))
     else:
         raise ValueError("z_policy must be 'longest' or 'shortest'")
+
+    quality = _automatic_quality_metrics(vectors, pairing_local, axes, mean_dist, z_idx)
 
     z = _unit(axes[z_idx])
     remaining = [k for k in range(3) if k != z_idx]
@@ -200,6 +246,7 @@ def build_local_frame(
             "ligand_filter": ligand,
             "cutoff": cutoff,
             "z_policy": z_policy,
+            "quality": quality,
         },
     )
 
