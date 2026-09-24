@@ -3,7 +3,9 @@ import json
 import numpy as np
 import pytest
 from pymatgen.core import Lattice, Structure
+from pymatgen.io.vasp import Poscar
 
+from localorb.cli import main
 from localorb.hr import Wannier90HR, read_hr, write_hr
 from localorb.tb import build_basis_transform, rotate_hr_basis
 from localorb.vectors import build_vector_frame
@@ -149,3 +151,79 @@ def test_basis_map_num_wann_must_match_hr_size():
     }
     with pytest.raises(ValueError, match="declares num_wann=10"):
         build_basis_transform(structure, [frame], basis_map, num_wann=5)
+
+
+def test_tb_rotate_cli_end_to_end(tmp_path):
+    structure = make_structure()
+    poscar = tmp_path / "POSCAR"
+    Poscar(structure).write_file(poscar)
+
+    frames_file = tmp_path / "frames.json"
+    frames_file.write_text(
+        json.dumps(
+            {
+                "frames": [
+                    {
+                        "provider": "vectors",
+                        "center_atom": "Ni1",
+                        "x_vector": [1.0, 1.0, 0.0],
+                        "z_vector": [0.0, 0.0, 1.0],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    basis_map = tmp_path / "basis_map.json"
+    basis_map.write_text(
+        json.dumps(
+            {
+                "num_wann": 5,
+                "groups": [
+                    {
+                        "center_atom": "Ni1",
+                        "indices": [1, 2, 3, 4, 5],
+                        "orbitals": ["dxy", "dyz", "dz2", "dxz", "dx2-y2"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    input_hr = tmp_path / "wannier90_hr.dat"
+    output_hr = tmp_path / "wannier90_hr_local.dat"
+    transform = tmp_path / "basis_transform.npz"
+    write_hr(input_hr, make_hr())
+
+    rc = main(
+        [
+            "tb-rotate",
+            str(poscar),
+            "--frames-file",
+            str(frames_file),
+            "--hr",
+            str(input_hr),
+            "--basis-map",
+            str(basis_map),
+            "-o",
+            str(output_hr),
+            "--transform-output",
+            str(transform),
+        ]
+    )
+    assert rc == 0
+    assert output_hr.exists()
+    assert transform.exists()
+
+    original = read_hr(input_hr)
+    rotated = read_hr(output_hr)
+    assert np.allclose(
+        np.linalg.eigvalsh(original.hamiltonians[0]),
+        np.linalg.eigvalsh(rotated.hamiltonians[0]),
+        atol=1e-9,
+    )
+
+    payload = np.load(transform)
+    B = payload["basis_transform"]
+    assert np.allclose(B @ B.conjugate().T, np.eye(5), atol=1e-12)
