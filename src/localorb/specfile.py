@@ -24,15 +24,33 @@ def _as_vector(value: Any, name: str) -> np.ndarray:
     return array
 
 
+def _image_text(value: Any | None, name: str) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    array = np.asarray(value)
+    if array.shape != (3,):
+        raise ValueError(f"{name} must have three integer components")
+    try:
+        integers = [int(item) for item in array]
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must contain integers") from exc
+    if not np.allclose(np.asarray(array, dtype=float), integers, atol=0.0):
+        raise ValueError(f"{name} must contain integers")
+    return ",".join(str(value) for value in integers)
+
+
 def _selector_with_image(
     selector: str,
     *,
-    specific_image: str | None,
-    shared_image: str | None,
+    specific_image: Any | None,
+    shared_image: Any | None,
 ) -> str:
     if "@" in selector:
         return selector
-    image = specific_image if specific_image is not None else shared_image
+    image_value = specific_image if specific_image is not None else shared_image
+    image = _image_text(image_value, "periodic image")
     return selector if image is None else f"{selector}@{image}"
 
 
