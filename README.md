@@ -98,7 +98,7 @@ y = Gram-Schmidt(R_plane - R_center, x)
 z = x cross y
 ```
 
-For an in-plane octahedral rotation where global `z` should remain fixed:
+For an in-plane octahedral rotation where the physical POSCAR Cartesian `z` direction should remain fixed:
 
 ```bash
 localorb inspect POSCAR \
@@ -112,12 +112,14 @@ localorb inspect POSCAR \
 Then
 
 ```text
-z = (0,0,1) in the selected working Cartesian frame
-x = in-plane projection of center -> x-atom
+physical z = POSCAR Cartesian (0,0,1)
+x = projection of center -> x-atom perpendicular to that z
 y = z cross x
 ```
 
-This is particularly useful when the main issue is an in-plane `dx2-y2 <-> dxy` basis rotation rather than a genuine 3D tilt.
+If a VESTA working frame is enabled, the same physical POSCAR `z` is first expressed in that working frame and converted back afterwards. This matches the behavior of the legacy rotation script.
+
+This mode is particularly useful when the main issue is an in-plane `dx2-y2 <-> dxy` basis rotation rather than a genuine 3D tilt.
 
 ### VASP/VESTA-style selectors
 
