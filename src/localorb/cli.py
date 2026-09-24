@@ -9,29 +9,53 @@ from pymatgen.core import Structure
 from pymatgen.io.vasp import Poscar
 
 from .frames import build_frames_for_element, build_local_frame
-from .manual import build_manual_frame
+from .manual import build_manual_frame, resolve_site_selector
 from .orbitals import D_ORBITALS, d_rotation_matrix
 from .procar import save_rotated_procar_npz
 from .rotate import frame_alignment_error, rotate_structure_to_frame
+from .vectors import build_vector_frame, parse_vector
 from .wannier import render_projection_block
 
 
 def _add_manual_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--center-atom", help="Manual center selector, e.g. Ni2, 6, or Ni2@0,0,1")
+    parser.add_argument("--center-atom", help="Manual/vector center selector, e.g. Ni2, 6, or Ni2@0,0,1")
     parser.add_argument("--x-atom", help="Manual atom defining local +x, e.g. O4 or 12@0,0,1")
     parser.add_argument("--plane-atom", help="Manual second atom defining the local xy plane, e.g. O7")
     parser.add_argument(
         "--manual-mode",
         choices=["fixed-z", "full-3d"],
         default="full-3d",
-        help="Manual frame convention: keep Cartesian z fixed, or construct a full 3D frame",
+        help="Manual frame convention: keep working-frame z fixed, or construct a full 3D frame",
+    )
+    parser.add_argument(
+        "--cart-frame",
+        choices=["poscar", "auto", "vesta"],
+        default="poscar",
+        help=(
+            "Working Cartesian frame for manual atoms. 'poscar' is the safe default; "
+            "'auto'/'vesta' enable the narrow legacy rhombohedral VESTA compatibility layer."
+        ),
+    )
+    parser.add_argument(
+        "--image",
+        default=None,
+        help="Shared periodic image for manual selectors, e.g. 0,0,1; explicit ATOM@i,j,k wins",
+    )
+    parser.add_argument("--center-image", default=None, help="Periodic image override for --center-atom")
+    parser.add_argument("--x-image", default=None, help="Periodic image override for --x-atom")
+    parser.add_argument(
+        "--plane-image",
+        "--y-image",
+        dest="plane_image",
+        default=None,
+        help="Periodic image override for --plane-atom (alias: --y-image)",
     )
     parser.add_argument(
         "--no-nearest-image",
         dest="nearest_image",
         action="store_false",
         default=True,
-        help="Do not move manual atoms without @i,j,k to their nearest periodic image",
+        help="Do not move manual atoms without an explicit image to their nearest periodic image",
     )
     parser.add_argument(
         "--index-base",
@@ -42,13 +66,18 @@ def _add_manual_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_vector_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--x-vector", help="Explicit local x direction in POSCAR Cartesian coordinates, e.g. 1,1,0")
+    parser.add_argument("--z-vector", help="Explicit local z direction in POSCAR Cartesian coordinates, e.g. 0,0,1")
+
+
 def _common_frame_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("structure", help="Input structure readable by pymatgen, e.g. POSCAR")
     parser.add_argument(
         "--provider",
-        choices=["auto", "manual"],
+        choices=["auto", "manual", "vectors"],
         default="auto",
-        help="How to construct local frames: automatic octahedral geometry or explicit atoms",
+        help="Frame source: automatic octahedral geometry, explicit atoms, or explicit vectors",
     )
     parser.add_argument("--center", help="Auto provider: center element, e.g. Ni")
     parser.add_argument("--ligand", default=None, help="Auto provider: ligand element filter, e.g. O")
@@ -66,6 +95,7 @@ def _common_frame_args(parser: argparse.ArgumentParser) -> None:
         help="Auto provider: comma-separated 0-based site indices; default all matching --center",
     )
     _add_manual_args(parser)
+    _add_vector_args(parser)
 
 
 def _parse_sites(text: str | None):
@@ -88,16 +118,39 @@ def _require_manual_args(args) -> None:
         raise SystemExit("Manual provider requires " + ", ".join(missing))
 
 
-def _manual_frame_from_args(structure: Structure, args):
+def _selector_with_image(selector: str, specific_image: str | None, shared_image: str | None) -> str:
+    if "@" in selector:
+        return selector
+    image = specific_image if specific_image is not None else shared_image
+    return selector if image is None else f"{selector}@{image}"
+
+
+def _manual_frame_from_args(structure: Structure, args, mode: str | None = None):
     _require_manual_args(args)
+    center = _selector_with_image(args.center_atom, args.center_image, args.image)
+    x_atom = _selector_with_image(args.x_atom, args.x_image, args.image)
+    plane_atom = _selector_with_image(args.plane_atom, args.plane_image, args.image)
     return build_manual_frame(
         structure,
-        center=args.center_atom,
-        x_atom=args.x_atom,
-        plane_atom=args.plane_atom,
-        mode=args.manual_mode,
+        center=center,
+        x_atom=x_atom,
+        plane_atom=plane_atom,
+        mode=mode or args.manual_mode,
         nearest_image=args.nearest_image,
         index_base=args.index_base,
+        cartesian_frame=args.cart_frame,
+    )
+
+
+def _vector_frame_from_args(structure: Structure, args):
+    if not args.center_atom or not args.x_vector or not args.z_vector:
+        raise SystemExit("Vector provider requires --center-atom, --x-vector, and --z-vector")
+    selection = resolve_site_selector(structure, args.center_atom, index_base=args.index_base)
+    return build_vector_frame(
+        structure,
+        center_index=selection.site_index,
+        x_vector=parse_vector(args.x_vector),
+        z_vector=parse_vector(args.z_vector),
     )
 
 
@@ -105,6 +158,8 @@ def _frames_from_args(args):
     structure = Structure.from_file(args.structure)
     if args.provider == "manual":
         return structure, [_manual_frame_from_args(structure, args)]
+    if args.provider == "vectors":
+        return structure, [_vector_frame_from_args(structure, args)]
 
     if not args.center:
         raise SystemExit("Auto provider requires --center, e.g. --center Ni")
@@ -125,6 +180,8 @@ def _frames_from_args(args):
 def _single_frame_from_args(structure: Structure, args):
     if args.provider == "manual":
         return _manual_frame_from_args(structure, args)
+    if args.provider == "vectors":
+        return _vector_frame_from_args(structure, args)
     if args.site is None:
         raise SystemExit("Auto provider requires --site for this command")
     return build_local_frame(
@@ -162,7 +219,7 @@ def cmd_report(args) -> int:
     _, frames = _frames_from_args(args)
     payload = {
         "convention": {
-            "rotation_local_to_global": "columns are local x,y,z unit vectors in global Cartesian coordinates",
+            "rotation_local_to_global": "columns are local x,y,z unit vectors in POSCAR Cartesian coordinates",
             "rotation_global_to_local": "transpose/inverse of rotation_local_to_global",
             "auto_indices": "0-based pymatgen/VASP ordering",
             "manual_integer_selectors": f"index_base={args.index_base}",
@@ -183,16 +240,35 @@ def cmd_wannier(args) -> int:
     return 0
 
 
-def cmd_rotate_poscar(args) -> int:
-    structure = Structure.from_file(args.structure)
-    frame = _single_frame_from_args(structure, args)
+def _write_rotated_poscar(structure: Structure, frame, output: Path) -> None:
     rotated = rotate_structure_to_frame(structure, frame)
-    # Poscar writes a consistent structure from fractional coordinates, so both
-    # Direct and Cartesian input structures are safely handled.
-    Poscar(rotated).write_file(args.output, direct=True)
-    print(f"Wrote {args.output}")
+    # Always write a self-consistent Direct-coordinate POSCAR. This deliberately
+    # avoids the legacy bug where Cartesian input could rotate the lattice while
+    # leaving atomic Cartesian coordinates unchanged.
+    Poscar(rotated).write_file(str(output), direct=True)
+    print(f"Wrote {output}")
     print(f"Provider: {frame.provider}; mode: {frame.mode}")
     print(f"Frame alignment error: {frame_alignment_error(frame):.3e}")
+
+
+def _mode_output_path(path: str, mode: str) -> Path:
+    p = Path(path)
+    suffix = mode.replace("-", "_")
+    if p.suffix:
+        return p.with_name(f"{p.stem}_{suffix}{p.suffix}")
+    return p.with_name(f"{p.name}_{suffix}")
+
+
+def cmd_rotate_poscar(args) -> int:
+    structure = Structure.from_file(args.structure)
+    if args.provider == "manual" and args.both_manual_modes:
+        for mode in ("fixed-z", "full-3d"):
+            frame = _manual_frame_from_args(structure, args, mode=mode)
+            _write_rotated_poscar(structure, frame, _mode_output_path(args.output, mode))
+        return 0
+
+    frame = _single_frame_from_args(structure, args)
+    _write_rotated_poscar(structure, frame, Path(args.output))
     return 0
 
 
@@ -218,13 +294,14 @@ def cmd_procar(args) -> int:
 
 def _add_single_frame_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("structure")
-    parser.add_argument("--provider", choices=["auto", "manual"], default="auto")
+    parser.add_argument("--provider", choices=["auto", "manual", "vectors"], default="auto")
     parser.add_argument("--site", type=int, default=None, help="Auto provider: 0-based center site index")
     parser.add_argument("--ligand", default=None)
     parser.add_argument("--coordination", type=int, default=6)
     parser.add_argument("--cutoff", type=float, default=None)
     parser.add_argument("--z-policy", choices=["longest", "shortest"], default="longest")
     _add_manual_args(parser)
+    _add_vector_args(parser)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -255,6 +332,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("rotate-poscar", help="Rigidly rotate a structure to one local frame")
     _add_single_frame_args(p)
+    p.add_argument("--both-manual-modes", action="store_true", help="For provider=manual, write fixed-z and full-3d outputs")
     p.add_argument("-o", "--output", default="POSCAR.rotated")
     p.set_defaults(func=cmd_rotate_poscar)
 
