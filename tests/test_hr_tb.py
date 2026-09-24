@@ -87,6 +87,25 @@ def test_full_d_basis_rotation_is_unitary_and_preserves_spectrum():
     assert diagnostics["max_frobenius_norm_change"] < 1e-10
 
 
+def test_general_complex_basis_convention_preserves_spectrum():
+    hr = make_hr(num_wann=5, nrpts=1)
+    rng = np.random.default_rng(2026)
+    a = rng.normal(size=(5, 5)) + 1j * rng.normal(size=(5, 5))
+    q, _ = np.linalg.qr(a)
+    # Rows of B are the new basis vectors expanded in the old basis.
+    B = q.T
+
+    rotated, diagnostics = rotate_hr_basis(hr, B)
+    expected = B.conjugate() @ hr.hamiltonians[0] @ B.T
+    assert np.allclose(rotated.hamiltonians[0], expected, atol=1e-12)
+    assert np.allclose(
+        np.linalg.eigvalsh(hr.hamiltonians[0]),
+        np.linalg.eigvalsh(rotated.hamiltonians[0]),
+        atol=1e-10,
+    )
+    assert diagnostics["unitarity_error"] < 1e-12
+
+
 def test_orbital_order_permutation_is_supported():
     structure = make_structure()
     frame = build_vector_frame(
