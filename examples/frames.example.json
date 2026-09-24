@@ -1,0 +1,36 @@
+{
+  "defaults": {
+    "index_base": 1,
+    "nearest_image": true,
+    "cart_frame": "poscar"
+  },
+  "frames": [
+    {
+      "provider": "manual",
+      "center_atom": "Ni1",
+      "x_atom": "O1",
+      "plane_atom": "O2",
+      "mode": "full-3d"
+    },
+    {
+      "provider": "manual",
+      "center_atom": "Ni2",
+      "x_atom": "O3@0,0,1",
+      "plane_atom": "O4@0,0,1",
+      "mode": "fixed-z"
+    },
+    {
+      "provider": "vectors",
+      "center_atom": "Ni3",
+      "x_vector": [1.0, 1.0, 0.0],
+      "z_vector": [0.0, 0.0, 1.0]
+    },
+    {
+      "provider": "auto",
+      "center_atom": "Ni4",
+      "ligand": "O",
+      "coordination": 6,
+      "z_policy": "longest"
+    }
+  ]
+}
