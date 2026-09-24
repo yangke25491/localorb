@@ -109,8 +109,9 @@ def build_basis_transform(
         indices = [int(value) - index_base for value in indices_raw]
         if len(indices) != 5:
             raise ValueError(
-                f"groups[{position}] has {len(indices)} indices. Exact d rotation requires "
-                "five Wannier functions for the complete d subspace."
+                f"groups[{position}] has {len(indices)} indices. Exact arbitrary 3D "
+                "d-orbital rotation requires the complete five-d-orbital subspace "
+                f"({', '.join(D_ORBITALS)}). Reduced eg/t2g blocks are not generally closed."
             )
         if len(set(indices)) != 5:
             raise ValueError(f"groups[{position}].indices contains duplicates")
