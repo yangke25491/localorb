@@ -2,6 +2,40 @@
 
 All notable user-facing changes to `localorb` are recorded here.
 
+## 0.4.0 - 2026-09-24
+
+### Added
+
+- Multi-site JSON frame specifications through `--frames-file`.
+  - Mix automatic, manual-atom, and explicit-vector providers in one supercell.
+  - Optional shared defaults.
+  - String or array-form periodic-image specifications.
+  - Duplicate physical center sites are rejected.
+- `localorb validate` geometry diagnostics for automatic octahedral frames.
+- `docs/frame_spec.md` and `examples/frames.example.json` for reproducible supercell frame definitions.
+- Standard `wannier90_hr.dat` parser/writer.
+- Exact full-five-d Wannier Hamiltonian basis rotation.
+- `localorb tb-rotate` command.
+- Explicit `basis_map.json` describing which Wannier indices form each site's five real d orbitals.
+- Exact basis-transform NPZ output containing the unitary transformation matrix and metadata.
+- `examples/basis_map.example.json` and `docs/tb_rotation.md`.
+- Numerical TB checks:
+  - basis unitarity,
+  - real-space Hamiltonian Frobenius-norm conservation,
+  - regression tests for onsite-block eigenvalue conservation.
+- Enhanced PROCAR NPZ output with frame matrices, providers/modes, and total-d-weight conservation diagnostics.
+
+### Physical safeguards
+
+- Arbitrary three-dimensional post-hoc orbital rotation is allowed only for a complete five-d Wannier block.
+- Reduced `eg`-only or `t2g`-only blocks are rejected for a general spatial rotation because those subspaces are not generally closed under the full `l=2` rotation representation.
+- For reduced low-energy models, the recommended workflow is to define the local axes during Wannier90 projection generation rather than force an incomplete post-hoc basis transformation.
+
+### Notes
+
+- A frame specification file and a Wannier basis map solve two different bookkeeping problems: the former maps physical sites to local Cartesian axes, while the latter maps Wannier indices to orbital blocks.
+- Unmapped Wannier functions remain unchanged during `tb-rotate`.
+
 ## 0.3.0 - 2026-09-24
 
 ### Added
