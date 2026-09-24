@@ -8,6 +8,7 @@ import numpy as np
 from pymatgen.core import Structure
 from pymatgen.io.vasp import Poscar
 
+from .diagnostics import diagnose_frame
 from .frames import build_frames_for_element, build_local_frame
 from .manual import build_manual_frame, resolve_site_selector
 from .orbitals import D_ORBITALS, d_rotation_matrix
@@ -204,6 +205,14 @@ def _print_frame(frame) -> None:
     print("  y =", " ".join(f"{v:+.8f}" for v in frame.y))
     print("  z =", " ".join(f"{v:+.8f}" for v in frame.z))
     print(f"  det(R) = {float(np.linalg.det(frame.rotation_local_to_global)):.10f}")
+    quality = frame.metadata.get("quality") if isinstance(frame.metadata, dict) else None
+    if isinstance(quality, dict):
+        print(
+            "  auto quality: "
+            f"opposition={float(quality['max_opposition_error']):.4f}, "
+            f"raw-axis-dot={float(quality['raw_axis_orthogonality_error']):.4f}, "
+            f"z-gap={float(quality['z_gap_fraction']):.4f}"
+        )
     if frame.metadata:
         print("  metadata =", json.dumps(frame.metadata, ensure_ascii=False))
 
@@ -228,6 +237,50 @@ def cmd_report(args) -> int:
     }
     Path(args.output).write_text(json.dumps(payload, indent=2), encoding="utf-8")
     print(f"Wrote {args.output}")
+    return 0
+
+
+def cmd_validate(args) -> int:
+    _, frames = _frames_from_args(args)
+    diagnostics = [
+        diagnose_frame(
+            frame,
+            max_opposition_error_warn=args.max_opposition_error,
+            max_raw_axis_dot_warn=args.max_raw_axis_dot,
+            min_z_gap_fraction_warn=args.min_z_gap,
+        )
+        for frame in frames
+    ]
+
+    for frame, diag in zip(frames, diagnostics):
+        print(
+            f"[{diag.status}] site {frame.site_index} {frame.center_symbol} "
+            f"provider={frame.provider} mode={frame.mode} "
+            f"orth_err={diag.orthonormal_error:.3e} det={diag.determinant:.10f}"
+        )
+        for name, value in diag.metrics.items():
+            print(f"  {name} = {value:.6g}")
+        for message in diag.warnings:
+            print(f"  WARNING: {message}")
+        for message in diag.errors:
+            print(f"  ERROR: {message}")
+
+    if args.output:
+        payload = {
+            "thresholds": {
+                "max_opposition_error_warn": args.max_opposition_error,
+                "max_raw_axis_dot_warn": args.max_raw_axis_dot,
+                "min_z_gap_fraction_warn": args.min_z_gap,
+            },
+            "diagnostics": [diag.as_dict() for diag in diagnostics],
+        }
+        Path(args.output).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        print(f"Wrote {args.output}")
+
+    if any(diag.status == "FAIL" for diag in diagnostics):
+        return 1
+    if args.strict and any(diag.status == "WARN" for diag in diagnostics):
+        return 2
     return 0
 
 
@@ -319,6 +372,30 @@ def build_parser() -> argparse.ArgumentParser:
     _common_frame_args(p)
     p.add_argument("-o", "--output", default="local_frames.json")
     p.set_defaults(func=cmd_report)
+
+    p = sub.add_parser("validate", help="Validate rotation matrices and flag ambiguous automatic frames")
+    _common_frame_args(p)
+    p.add_argument(
+        "--max-opposition-error",
+        type=float,
+        default=0.10,
+        help="Warn when max(1+cos(theta)) of opposite pairs exceeds this value",
+    )
+    p.add_argument(
+        "--max-raw-axis-dot",
+        type=float,
+        default=0.15,
+        help="Warn when pre-orthogonalization max |axis_i dot axis_j| exceeds this value",
+    )
+    p.add_argument(
+        "--min-z-gap",
+        type=float,
+        default=0.02,
+        help="Warn when automatic z bond-length separation is below this relative gap",
+    )
+    p.add_argument("--strict", action="store_true", help="Return exit code 2 when warnings are present")
+    p.add_argument("-o", "--output", default=None, help="Optional JSON diagnostics output")
+    p.set_defaults(func=cmd_validate)
 
     p = sub.add_parser("wannier", help="Generate a Wannier90 projections block")
     _common_frame_args(p)
