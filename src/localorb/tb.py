@@ -1,0 +1,215 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+from pymatgen.core import Structure
+
+from .frames import LocalFrame
+from .hr import Wannier90HR
+from .manual import resolve_site_selector
+from .orbitals import D_ORBITALS, d_rotation_matrix
+
+
+def load_basis_map(path: str | Path) -> dict[str, Any]:
+    path = Path(path)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid basis-map JSON {path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Basis-map root must be a JSON object")
+    groups = payload.get("groups")
+    if not isinstance(groups, list) or not groups:
+        raise ValueError("Basis map must contain a non-empty 'groups' array")
+    return payload
+
+
+def _resolve_group_site(
+    structure: Structure,
+    group: dict[str, Any],
+    default_index_base: int,
+) -> int:
+    if "site_index" in group:
+        site_index = int(group["site_index"])
+        if not 0 <= site_index < len(structure):
+            raise ValueError(f"site_index {site_index} is outside the structure")
+        return site_index
+    if "center_atom" in group:
+        selection = resolve_site_selector(
+            structure,
+            str(group["center_atom"]),
+            index_base=int(group.get("index_base", default_index_base)),
+        )
+        return selection.site_index
+    raise ValueError("Each basis-map group requires site_index or center_atom")
+
+
+def _canonical_permutation(orbitals: list[str]) -> list[int]:
+    if len(orbitals) != 5 or set(orbitals) != set(D_ORBITALS):
+        raise ValueError(
+            "Exact arbitrary 3D d-orbital rotation requires the complete five-d-orbital "
+            "subspace at each transformed block. A reduced eg-only or t2g-only basis is "
+            "not generally closed under spatial rotation. Provide exactly: "
+            + ", ".join(D_ORBITALS)
+        )
+    return [D_ORBITALS.index(label) for label in orbitals]
+
+
+def build_basis_transform(
+    structure: Structure,
+    frames: list[LocalFrame],
+    basis_map: dict[str, Any],
+    num_wann: int,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Construct the row-wise new-basis-in-old-basis transformation matrix.
+
+    If ``B`` is returned, transformed Hamiltonians are
+
+    ``H_local(R) = B @ H_global(R) @ B.conj().T``.
+
+    Unmapped Wannier functions remain unchanged.
+    """
+    if num_wann <= 0:
+        raise ValueError("num_wann must be positive")
+    declared_num_wann = basis_map.get("num_wann")
+    if declared_num_wann is not None and int(declared_num_wann) != num_wann:
+        raise ValueError(
+            f"basis map declares num_wann={declared_num_wann}, but hr.dat has {num_wann}"
+        )
+
+    frame_by_site = {frame.site_index: frame for frame in frames}
+    if len(frame_by_site) != len(frames):
+        raise ValueError("Local frame list contains duplicate site indices")
+
+    default_index_base = int(basis_map.get("index_base", 1))
+    if default_index_base not in {0, 1}:
+        raise ValueError("basis-map index_base must be 0 or 1")
+
+    B = np.eye(num_wann, dtype=complex)
+    used_indices: set[int] = set()
+    applied_groups: list[dict[str, Any]] = []
+
+    for position, raw_group in enumerate(basis_map["groups"]):
+        if not isinstance(raw_group, dict):
+            raise ValueError(f"groups[{position}] must be a JSON object")
+        group = dict(raw_group)
+        site_index = _resolve_group_site(structure, group, default_index_base)
+        if site_index not in frame_by_site:
+            raise ValueError(
+                f"No LocalFrame was supplied for basis-map group site {site_index}"
+            )
+
+        indices_raw = group.get("indices")
+        if not isinstance(indices_raw, list):
+            raise ValueError(f"groups[{position}].indices must be an array")
+        index_base = int(group.get("index_base", default_index_base))
+        indices = [int(value) - index_base for value in indices_raw]
+        if len(indices) != 5:
+            raise ValueError(
+                f"groups[{position}] has {len(indices)} indices. Exact d rotation requires "
+                "five Wannier functions for the complete d subspace."
+            )
+        if len(set(indices)) != 5:
+            raise ValueError(f"groups[{position}].indices contains duplicates")
+        if any(index < 0 or index >= num_wann for index in indices):
+            raise ValueError(f"groups[{position}] contains Wannier indices outside hr.dat")
+        overlap = used_indices.intersection(indices)
+        if overlap:
+            raise ValueError(
+                f"Basis-map groups overlap on zero-based Wannier indices {sorted(overlap)}"
+            )
+        used_indices.update(indices)
+
+        orbitals = [str(value) for value in group.get("orbitals", D_ORBITALS)]
+        permutation = _canonical_permutation(orbitals)
+
+        T_canonical = d_rotation_matrix(frame_by_site[site_index].rotation_local_to_global)
+        T_ordered = T_canonical[np.ix_(permutation, permutation)]
+        B[np.ix_(indices, indices)] = T_ordered
+
+        applied_groups.append(
+            {
+                "group_index": position,
+                "site_index": site_index,
+                "wannier_indices_zero_based": indices,
+                "orbitals": orbitals,
+                "provider": frame_by_site[site_index].provider,
+                "mode": frame_by_site[site_index].mode,
+            }
+        )
+
+    unitarity_error = float(np.max(np.abs(B @ B.conjugate().T - np.eye(num_wann))))
+    if unitarity_error > 1e-8:
+        raise RuntimeError(
+            f"Constructed Wannier basis transformation is not unitary: {unitarity_error:.3e}"
+        )
+
+    metadata = {
+        "num_wann": num_wann,
+        "index_base": default_index_base,
+        "applied_groups": applied_groups,
+        "unmapped_wannier_indices_zero_based": [
+            index for index in range(num_wann) if index not in used_indices
+        ],
+        "unitarity_error": unitarity_error,
+    }
+    return B, metadata
+
+
+def rotate_hr_basis(
+    hr: Wannier90HR,
+    basis_transform: np.ndarray,
+    *,
+    comment_suffix: str = " | localorb local-d basis",
+) -> tuple[Wannier90HR, dict[str, float]]:
+    B = np.asarray(basis_transform, dtype=complex)
+    if B.shape != (hr.num_wann, hr.num_wann):
+        raise ValueError(
+            f"basis_transform must have shape ({hr.num_wann}, {hr.num_wann})"
+        )
+    unitarity_error = float(
+        np.max(np.abs(B @ B.conjugate().T - np.eye(hr.num_wann)))
+    )
+    if unitarity_error > 1e-8:
+        raise ValueError(f"basis_transform is not unitary: {unitarity_error:.3e}")
+
+    transformed = np.einsum(
+        "am,rmn,bn->rab",
+        B,
+        hr.hamiltonians,
+        B.conjugate(),
+        optimize=True,
+    )
+
+    old_norms = np.linalg.norm(hr.hamiltonians.reshape(hr.nrpts, -1), axis=1)
+    new_norms = np.linalg.norm(transformed.reshape(hr.nrpts, -1), axis=1)
+    norm_error = float(np.max(np.abs(old_norms - new_norms)))
+
+    rotated = Wannier90HR(
+        comment=hr.comment + comment_suffix,
+        num_wann=hr.num_wann,
+        degeneracies=np.array(hr.degeneracies, copy=True),
+        r_vectors=np.array(hr.r_vectors, copy=True),
+        hamiltonians=transformed,
+    )
+    diagnostics = {
+        "unitarity_error": unitarity_error,
+        "max_frobenius_norm_change": norm_error,
+    }
+    return rotated, diagnostics
+
+
+def save_basis_transform(
+    path: str | Path,
+    basis_transform: np.ndarray,
+    metadata: dict[str, Any],
+) -> None:
+    """Save the numerical basis transform and JSON metadata in one NPZ file."""
+    np.savez_compressed(
+        path,
+        basis_transform=np.asarray(basis_transform),
+        metadata_json=np.asarray(json.dumps(metadata, indent=2)),
+    )
