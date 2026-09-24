@@ -1,12 +1,42 @@
 # localorb
 
-`localorb` builds physically meaningful local orbital frames directly from crystal structures and connects those frames to Wannier90, VASP-oriented workflows, and tight-binding/post-processing backends.
+`localorb` is a structure-aware toolkit for defining physically meaningful local orbital frames and carrying the same convention consistently through VASP, Wannier90, and tight-binding workflows.
 
-The project deliberately separates **how a local frame is defined** from **what the frame is used for**. A manually selected `Ni2 -> O4` frame, an automatically detected NiO6 frame, and an explicitly supplied pair of Cartesian axes all produce the same `LocalFrame` object and can feed the same downstream tools.
+The central design rule is:
 
-For complete end-to-end examples, see [`docs/workflows.md`](docs/workflows.md). Release notes are in [`CHANGELOG.md`](CHANGELOG.md).
+> **separate how a local frame is defined from what that frame is used for.**
 
-## Core model
+A manually selected `Ni2 -> O4` frame, an automatically detected NiO6 frame, and explicitly supplied crystallographic axes all produce the same `LocalFrame` object and can drive the same downstream backends.
+
+Current version: **0.4.0**
+
+## Documentation
+
+- [`docs/workflows.md`](docs/workflows.md): practical VASP/Wannier90 workflows
+- [`docs/frame_spec.md`](docs/frame_spec.md): multi-site frame JSON files for supercells
+- [`docs/tb_rotation.md`](docs/tb_rotation.md): exact full-5d `wannier90_hr.dat` basis rotation
+- [`CHANGELOG.md`](CHANGELOG.md): release history
+- [`examples/frames.example.json`](examples/frames.example.json): mixed frame-provider example
+- [`examples/basis_map.example.json`](examples/basis_map.example.json): complete-d Wannier basis map
+
+---
+
+## Physical model
+
+Every provider produces
+
+```text
+R = [ x'  y'  z' ]
+```
+
+with the local Cartesian axes stored as columns in POSCAR Cartesian coordinates:
+
+```text
+v_global = R @ v_local
+v_local  = R.T @ v_global
+```
+
+The same `R` then feeds multiple backends:
 
 ```text
 POSCAR / structure
@@ -15,40 +45,42 @@ POSCAR / structure
   frame provider
        |
        v
-R = [x' y' z']   (local -> POSCAR Cartesian)
+R = [x' y' z']
        |
-       +--> validation / reproducibility report
+       +--> inspect / validate / JSON report
        +--> Wannier90 local projections
        +--> rigid POSCAR rotation
        +--> real-d 5x5 rotation matrix
        +--> phase-resolved PROCAR rotation
-       +--> future Wannier/TB Hamiltonian rotation
+       +--> exact full-d wannier90_hr.dat basis rotation
 ```
 
-The local-to-global convention is
-
-```text
-v_global = R @ v_local
-v_local  = R.T @ v_global
-```
-
-with `x'`, `y'`, `z'` stored as columns of `R`.
+---
 
 ## Installation
 
 ```bash
+git clone https://github.com/yangke25491/localorb.git
+cd localorb
 python -m pip install -e .
+```
+
+For development/tests:
+
+```bash
+python -m pip install -e '.[test]'
+pytest -q
 ```
 
 Requirements are intentionally small: `numpy` and `pymatgen`.
 
 ---
 
-# Frame providers
+# 1. Frame providers
 
-## 1. Automatic octahedral provider
+## Automatic octahedral geometry
 
-Use this for large supercells or many equivalent transition-metal sites:
+Useful for large supercells where the same geometric convention should be applied repeatedly:
 
 ```bash
 localorb inspect POSCAR \
@@ -58,23 +90,23 @@ localorb inspect POSCAR \
   --coordination 6
 ```
 
-For sixfold coordination, `localorb` pairs approximately opposite ligands into three axes. By default the pair with the largest mean center-ligand distance defines local `z`:
+The six nearest selected ligands are paired into three approximately opposite directions. The local `z` pair is selected with
 
 ```bash
 --z-policy longest
 ```
 
-or use
+or
 
 ```bash
 --z-policy shortest
 ```
 
-Automatic geometry is convenient, but it is still a convention. For publication-quality work where the physical axes are known, prefer the manual or explicit-vector providers.
+Automatic frames carry geometry-quality metadata and can be checked with `localorb validate`.
 
-## 2. Manual atom-defined provider
+## Manual atom-defined frame
 
-This is the preferred route when you know which bonds should define the local orbital axes.
+Preferred when the physically meaningful ligand directions are known:
 
 ```bash
 localorb inspect POSCAR \
@@ -85,74 +117,34 @@ localorb inspect POSCAR \
   --manual-mode full-3d
 ```
 
-The three atoms mean:
+The convention is
 
 ```text
-center atom
-center -> x-atom                  defines local +x
-center/x-atom/plane-atom          define the local xy plane
+center -> x-atom       defines local +x
+center/x/plane atoms   define the local xy plane
 ```
 
-For `full-3d`:
-
-```text
-x = normalize(R_x - R_center)
-y = Gram-Schmidt(R_plane - R_center, x)
-z = x cross y
-```
-
-For an in-plane octahedral rotation where the physical POSCAR Cartesian `z` direction should remain fixed:
+`full-3d` constructs the complete local frame. `fixed-z` keeps the physical POSCAR Cartesian z axis fixed and only determines the in-plane axes:
 
 ```bash
-localorb inspect POSCAR \
-  --provider manual \
-  --center-atom Ni2 \
-  --x-atom O4 \
-  --plane-atom O7 \
-  --manual-mode fixed-z
+--manual-mode fixed-z
 ```
 
-Then
+This is useful when the relevant issue is an in-plane octahedral rotation rather than a genuine 3D tilt.
 
-```text
-physical z = POSCAR Cartesian (0,0,1)
-x = projection of center -> x-atom perpendicular to that z
-y = z cross x
-```
+### VASP/VESTA-style atom selectors
 
-If a VESTA working frame is enabled, the same physical POSCAR `z` is first expressed in that working frame and converted back afterwards. This matches the behavior of the legacy rotation script.
-
-This mode is particularly useful when the main issue is an in-plane `dx2-y2 <-> dxy` basis rotation rather than a genuine 3D tilt.
-
-### VASP/VESTA-style selectors
-
-The manual provider understands generated element-local labels and global integer indices:
+Supported selectors include
 
 ```text
 Ni2
 O4
-O7
 6
 12
-15
-```
-
-Bare integer selectors are 1-based by default, matching common POSCAR/VESTA usage. Use
-
-```bash
---index-base 0
-```
-
-for Python/pymatgen indexing.
-
-Explicit periodic images can be written inline:
-
-```text
 O4@0,0,1
-O7@-1,0,0
 ```
 
-or with the legacy-script style options:
+Bare integers are 1-based by default. Periodic images may also be supplied with
 
 ```bash
 --image 0,0,1
@@ -161,34 +153,27 @@ or with the legacy-script style options:
 --y-image 0,0,1
 ```
 
-`--plane-image` and `--y-image` are aliases. Inline `ATOM@i,j,k` has highest priority, then the atom-specific image option, then shared `--image`.
-
-If no explicit image is supplied, ligand atoms are moved to the nearest periodic image relative to the center. Disable this with:
+If no image is explicit, the ligand is moved to its nearest periodic image relative to the center. Disable that behavior with
 
 ```bash
 --no-nearest-image
 ```
 
-### Optional VESTA display-frame compatibility
+The optional legacy VESTA rhombohedral/trigonal display compatibility layer is available through
 
-The safe default is always:
+```bash
+--cart-frame vesta
+```
+
+but the safe default is always the physical POSCAR Cartesian frame:
 
 ```bash
 --cart-frame poscar
 ```
 
-For the rhombohedral/trigonal display convention used by the legacy `rotate_poscar_by_vesta_atom.py` workflow, `localorb` also provides:
+## Explicit Cartesian vectors
 
-```bash
---cart-frame auto
---cart-frame vesta
-```
-
-This is deliberately implemented as a narrow compatibility layer, not as a claim to reproduce every possible VESTA display orientation. `vesta` raises an error if the cell does not match the supported rhombohedral-like heuristic; `auto` falls back to the POSCAR Cartesian frame.
-
-## 3. Explicit-vector provider
-
-Use this when the physical axes are already known analytically or from another code:
+When the desired axes are already known analytically:
 
 ```bash
 localorb inspect POSCAR \
@@ -198,33 +183,11 @@ localorb inspect POSCAR \
   --z-vector 0,0,1
 ```
 
-`z` is normalized first, `x` is projected perpendicular to `z`, and the right-handed frame is completed by `y = z x x`.
-
-This provider is useful for known crystallographic directions, externally fitted local frames, or debugging the automatic/manual providers.
-
 ---
 
-# Backends
+# 2. Validate and record the frame convention
 
-## Inspect a frame
-
-```bash
-localorb inspect POSCAR --center Ni --ligand O
-```
-
-or
-
-```bash
-localorb inspect POSCAR \
-  --provider manual \
-  --center-atom Ni2 --x-atom O4 --plane-atom O7
-```
-
-The output includes local axes, provider, mode, ligand information, `det(R)`, and automatic geometry-quality metrics when available.
-
-## Validate frames and flag ambiguous automatic choices
-
-For a large supercell, validate before generating a production Wannier projection block:
+For automatic supercell processing:
 
 ```bash
 localorb validate POSCAR \
@@ -233,7 +196,7 @@ localorb validate POSCAR \
   -o frame_validation.json
 ```
 
-Automatic octahedral validation reports:
+Automatic diagnostics include:
 
 ```text
 max_opposition_error
@@ -241,26 +204,57 @@ raw_axis_orthogonality_error
 z_gap_fraction
 ```
 
-The first two quantify how close the selected ligand geometry is to three opposite orthogonal axes. `z_gap_fraction` measures how clearly the chosen z pair is distinguished from the nearest competing pair by mean bond length.
+A warning is not automatically a failure. For example, a nearly cubic octahedron naturally has nearly degenerate choices for which equivalent axis should be called `z`.
 
-A `WARN` does not automatically mean the frame is physically wrong. For example, a cubic octahedron naturally has nearly degenerate choices for which equivalent axis should be called z. Use `--strict` when you want warnings to produce a non-zero exit code for automated workflows.
-
-## Export a reproducible JSON report
+Save the actual numerical frame matrices used in production:
 
 ```bash
 localorb report POSCAR \
-  --provider manual \
-  --center-atom Ni2 --x-atom O4 --plane-atom O7 \
+  --provider auto \
+  --center Ni --ligand O \
   -o local_frames.json
 ```
 
-The report records local/global rotation matrices, selected atoms, periodic images, frame convention, and compatibility metadata.
+---
 
-## Wannier90: define local orbitals at the source
+# 3. Multi-site supercell frame files
 
-For Wannier/TB work this is generally the preferred route.
+For inequivalent sites, use one JSON file instead of one command per atom:
 
-Automatic all-Ni example:
+```bash
+localorb inspect POSCAR --frames-file frames.json
+localorb validate POSCAR --frames-file frames.json -o frame_validation.json
+```
+
+A single file may mix providers:
+
+```json
+{
+  "frames": [
+    {
+      "provider": "manual",
+      "center_atom": "Ni1",
+      "x_atom": "O1",
+      "plane_atom": "O2",
+      "mode": "full-3d"
+    },
+    {
+      "provider": "vectors",
+      "center_atom": "Ni2",
+      "x_vector": [1, 0, 0],
+      "z_vector": [0, 0, 1]
+    }
+  ]
+}
+```
+
+See [`docs/frame_spec.md`](docs/frame_spec.md) for the full schema.
+
+---
+
+# 4. Wannier90: define local orbitals at the source
+
+For new Wannier/TB calculations this is generally the preferred route.
 
 ```bash
 localorb wannier POSCAR \
@@ -270,45 +264,22 @@ localorb wannier POSCAR \
   -o projections.win
 ```
 
-Manual one-site example:
+For an inequivalent supercell:
 
 ```bash
 localorb wannier POSCAR \
-  --provider manual \
-  --center-atom Ni2 --x-atom O4 --plane-atom O7 \
-  --manual-mode full-3d \
+  --frames-file frames.json \
   --orbitals dz2,dx2-y2 \
   -o projections.win
 ```
 
-Explicit-vector example:
+The output uses Wannier90 site-specific local `z=` and `x=` projection axes, so different sites may carry different physically meaningful orbital frames without rotating the whole crystal.
 
-```bash
-localorb wannier POSCAR \
-  --provider vectors \
-  --center-atom Ni2 \
-  --x-vector 1,0,0 \
-  --z-vector 0,0,1 \
-  --orbitals dz2,dx2-y2 \
-  -o projections.win
-```
+---
 
-The generated Wannier90 projection block contains site-dependent local `z` and `x` axes, so each transition-metal site can have its own orbital frame.
+# 5. Rotate an entire POSCAR
 
-## Rotate an entire POSCAR
-
-Use whole-structure rotation only when one common frame is meaningful.
-
-Automatic:
-
-```bash
-localorb rotate-poscar POSCAR \
-  --provider auto \
-  --site 10 --ligand O \
-  -o POSCAR.rotated
-```
-
-Manual:
+When one common local frame is meaningful for the entire structure:
 
 ```bash
 localorb rotate-poscar POSCAR \
@@ -316,11 +287,11 @@ localorb rotate-poscar POSCAR \
   --center-atom Ni2 \
   --x-atom O4 \
   --plane-atom O7 \
-  --manual-mode fixed-z \
+  --manual-mode full-3d \
   -o POSCAR.rotated
 ```
 
-Generate both manual conventions in one run:
+Compare fixed-z and full-3d conventions in one run:
 
 ```bash
 localorb rotate-poscar POSCAR \
@@ -330,11 +301,11 @@ localorb rotate-poscar POSCAR \
   -o POSCAR_rotated
 ```
 
-which writes files with `_fixed_z` and `_full_3d` suffixes.
+Rotated structures are rebuilt through pymatgen and written in Direct coordinates. This avoids the common Cartesian-input failure mode where only the lattice is rotated while Cartesian atom coordinates are left unchanged.
 
-Rotated POSCAR output is always rebuilt from the rotated lattice plus unchanged fractional coordinates and written in Direct form. This avoids the classic Cartesian-input bug where the lattice is rotated but Cartesian atom coordinates are accidentally left unchanged.
+---
 
-## Real-d orbital rotation matrix
+# 6. Real d-orbital rotation matrix
 
 ```bash
 localorb d-matrix POSCAR \
@@ -342,59 +313,98 @@ localorb d-matrix POSCAR \
   --center-atom Ni2 --x-atom O4 --plane-atom O7
 ```
 
-Orbital order is
+The fixed orbital order is
 
 ```text
 dxy dyz dz2 dxz dx2-y2
 ```
 
-The implementation uses the symmetric-traceless rank-2 tensor representation and therefore does not depend on Euler-angle conventions.
+The implementation uses the symmetric-traceless rank-2 tensor representation, so it does not depend on an Euler-angle convention.
 
-## PROCAR local-orbital backend
+---
 
-For a phase-resolved VASP PROCAR, rotate the complex d-projection amplitudes rather than already-squared weights:
+# 7. Existing VASP calculation: rotate PROCAR amplitudes
+
+For a phase-resolved PROCAR:
 
 ```bash
 localorb procar POSCAR \
-  --provider auto \
-  --center Ni --ligand O \
+  --frames-file frames.json \
   --procar PROCAR \
   -o PROCAR_LOCAL.npz
 ```
 
-or use the manual/vector provider in exactly the same way.
+The transformation is applied to the complex d-orbital projection amplitudes **before squaring**. Already-squared orbital weights are not treated as linear coefficients.
 
-The NPZ output stores local-frame complex coefficients and weights without pretending to be a native VASP PROCAR file.
+The NPZ stores:
+
+- local complex coefficients and weights,
+- site indices,
+- frame provider/mode,
+- local/global rotation matrices,
+- orbital names and spin channels,
+- total-d-weight conservation diagnostics.
+
+It deliberately does not pretend to be a native VASP PROCAR file.
 
 ---
 
-# Choosing a strategy
+# 8. Existing complete-d Wannier model: rotate `wannier90_hr.dat`
+
+For an existing Wannier model containing a complete five-d block for every transformed site:
+
+```bash
+localorb tb-rotate POSCAR \
+  --frames-file frames.json \
+  --hr wannier90_hr.dat \
+  --basis-map basis_map.json \
+  -o wannier90_hr_local.dat \
+  --transform-output basis_transform.npz
+```
+
+The exact basis convention is
+
+```text
+|new_a> = sum_m B[a,m] |old_m>
+H_local(R) = B H_global(R) B^dagger
+```
+
+`localorb` verifies that `B` is unitary and that the Frobenius norm of every real-space Hamiltonian block is preserved.
+
+## Why complete five-d blocks are required
+
+A general spatial rotation of d orbitals acts in the full `l=2` space:
+
+```text
+dxy dyz dz2 dxz dx2-y2
+```
+
+A reduced `eg = {dz2, dx2-y2}` model is **not generally closed** under an arbitrary 3D rotation because the rotated orbitals can contain `t2g` components.
+
+Therefore `localorb` deliberately rejects post-hoc arbitrary 3D rotation of a two-orbital `eg` or three-orbital `t2g` block. For reduced low-energy models, define the desired local axes during Wannier90 projection generation instead.
+
+See [`docs/tb_rotation.md`](docs/tb_rotation.md) for the basis-map format and mathematical details.
+
+---
+
+## Strategy guide
 
 | Situation | Recommended route |
 |---|---|
 | One common crystal orientation | `rotate-poscar` |
-| Different octahedral tilts at different sites | site-dependent `wannier` |
+| Different local tilts at different sites | site-dependent `wannier` |
 | Large supercell / disorder | `provider auto` + `validate` |
 | Physical ligand directions known | `provider manual` |
 | Crystallographic axes known analytically | `provider vectors` |
-| Existing VASP calculation, need local fatbands/PDOS | `procar` |
-| Only in-plane rotation matters | `manual-mode fixed-z` |
-| Genuine 3D tilt | `manual-mode full-3d` or auto geometry |
-| Need legacy VESTA rhombohedral display convention | manual + `--cart-frame vesta` |
+| Existing VASP result, need local orbital weights | `procar` |
+| Existing complete five-d Wannier model | `tb-rotate` |
+| Reduced `eg` Wannier model | define local axes during Wannierization |
+| Only in-plane octahedral rotation matters | `manual-mode fixed-z` |
+| Genuine 3D tilt | `manual-mode full-3d` or validated auto frame |
 
-# Scientific caution
+## Scientific caution
 
-Automatic local-axis construction is geometric. Strong Jahn-Teller distortion, ligand vacancies, unusual coordination, or nearly degenerate axis choices can make the physical convention ambiguous. In those cases, use the manual or explicit-vector provider and save a JSON report alongside the calculation.
-
-The VESTA compatibility transform is intentionally narrow and should not be treated as a universal VESTA coordinate converter.
-
-# Roadmap
-
-- Multiple manual frame specifications in one command for arbitrary supercells.
-- Square-planar, tetrahedral, trigonal-prismatic, and user-defined coordination templates.
-- Rotation of Wannier/TB Hamiltonians between global and site-local orbital bases.
-- Validation plots comparing orbital-resolved bands before and after basis changes.
-- Export helpers for downstream PyProcar/fatband workflows.
+A local orbital frame is a physical convention, not just a plotting choice. Automatic geometry is useful for scale, but strong Jahn-Teller distortions, vacancies, unusual coordination, or nearly degenerate axes may make the physically appropriate convention ambiguous. Use `validate`, inspect flagged sites, and archive both the human-readable frame specification and the resulting numerical frame matrices with production calculations.
 
 ## License
 
