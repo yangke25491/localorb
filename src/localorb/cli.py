@@ -10,11 +10,13 @@ from pymatgen.io.vasp import Poscar
 
 from .diagnostics import diagnose_frame
 from .frames import build_frames_for_element, build_local_frame
+from .hr import read_hr, write_hr
 from .manual import build_manual_frame, resolve_site_selector
 from .orbitals import D_ORBITALS, d_rotation_matrix
 from .procar import save_rotated_procar_npz
 from .rotate import frame_alignment_error, rotate_structure_to_frame
 from .specfile import build_frames_from_spec_file
+from .tb import build_basis_transform, load_basis_map, rotate_hr_basis, save_basis_transform
 from .vectors import build_vector_frame, parse_vector
 from .wannier import render_projection_block
 
@@ -370,8 +372,37 @@ def cmd_procar(args) -> int:
     _, frames = _frames_from_args(args)
     save_rotated_procar_npz(args.output, args.procar, frames)
     print(f"Wrote {args.output}")
-    print("arrays: coefficients[spin,k,band,site,orbital], weights, site_indices, orbital_names, spin_values")
+    print(
+        "arrays include coefficients, weights, site/frame metadata, local/global "
+        "rotation matrices, and d-weight conservation diagnostics"
+    )
     print("orbital order:", " ".join(D_ORBITALS))
+    return 0
+
+
+def cmd_tb_rotate(args) -> int:
+    structure, frames = _frames_from_args(args)
+    hr = read_hr(args.hr)
+    basis_map = load_basis_map(args.basis_map)
+    B, metadata = build_basis_transform(structure, frames, basis_map, hr.num_wann)
+    rotated, diagnostics = rotate_hr_basis(hr, B)
+    write_hr(args.output, rotated)
+
+    metadata = dict(metadata)
+    metadata["source_hr"] = str(args.hr)
+    metadata["output_hr"] = str(args.output)
+    metadata["basis_map"] = str(args.basis_map)
+    metadata["diagnostics"] = diagnostics
+    save_basis_transform(args.transform_output, B, metadata)
+
+    print(f"Wrote rotated Hamiltonian: {args.output}")
+    print(f"Wrote basis transform: {args.transform_output}")
+    print(f"num_wann = {hr.num_wann}; transformed groups = {len(metadata['applied_groups'])}")
+    print(f"unitarity error = {diagnostics['unitarity_error']:.3e}")
+    print(
+        "max Frobenius-norm change across R blocks = "
+        f"{diagnostics['max_frobenius_norm_change']:.3e}"
+    )
     return 0
 
 
@@ -459,6 +490,25 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--procar", default="PROCAR", help="Path to phase-resolved PROCAR")
     p.add_argument("-o", "--output", default="PROCAR_LOCAL.npz")
     p.set_defaults(func=cmd_procar)
+
+    p = sub.add_parser(
+        "tb-rotate",
+        help="Rotate complete five-d Wannier blocks in wannier90_hr.dat into local frames",
+    )
+    _common_frame_args(p)
+    p.add_argument("--hr", default="wannier90_hr.dat", help="Input Wannier90 hr.dat")
+    p.add_argument(
+        "--basis-map",
+        required=True,
+        help="JSON mapping complete five-d Wannier blocks to structure sites and orbital order",
+    )
+    p.add_argument("-o", "--output", default="wannier90_hr_local.dat")
+    p.add_argument(
+        "--transform-output",
+        default="basis_transform.npz",
+        help="NPZ file storing the exact unitary basis transform and metadata",
+    )
+    p.set_defaults(func=cmd_tb_rotate)
 
     return parser
 
