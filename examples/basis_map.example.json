@@ -1,0 +1,16 @@
+{
+  "index_base": 1,
+  "num_wann": 10,
+  "groups": [
+    {
+      "center_atom": "Ni1",
+      "indices": [1, 2, 3, 4, 5],
+      "orbitals": ["dxy", "dyz", "dz2", "dxz", "dx2-y2"]
+    },
+    {
+      "center_atom": "Ni2",
+      "indices": [6, 7, 8, 9, 10],
+      "orbitals": ["dxy", "dyz", "dz2", "dxz", "dx2-y2"]
+    }
+  ]
+}
