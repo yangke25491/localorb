@@ -366,8 +366,10 @@ The exact basis convention is
 
 ```text
 |new_a> = sum_m B[a,m] |old_m>
-H_local(R) = B H_global(R) B^dagger
+H_local(R) = B* H_global(R) B^T
 ```
+
+where `B*` is element-wise complex conjugation. The current spatial d-orbital matrices are real, so for them this is equivalently `B H B^T`.
 
 `localorb` verifies that `B` is unitary and that the Frobenius norm of every real-space Hamiltonian block is preserved.
 
