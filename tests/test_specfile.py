@@ -63,6 +63,33 @@ def test_mixed_multi_site_spec_builds_one_frame_per_center(tmp_path):
         assert np.isclose(np.linalg.det(R), 1.0, atol=1e-12)
 
 
+def test_array_form_periodic_images_are_accepted(tmp_path):
+    structure = make_two_site_structure()
+    spec = tmp_path / "images.json"
+    spec.write_text(
+        json.dumps(
+            {
+                "frames": [
+                    {
+                        "provider": "manual",
+                        "center_atom": "Ni1",
+                        "x_atom": "O1",
+                        "plane_atom": "O2",
+                        "center_image": [0, 0, 0],
+                        "x_image": [0, 0, 0],
+                        "plane_image": [0, 0, 0],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    frame = build_frames_from_spec_file(structure, spec)[0]
+    assert frame.metadata["center_image"] == [0, 0, 0]
+    assert frame.metadata["x_image"] == [0, 0, 0]
+    assert frame.metadata["plane_image"] == [0, 0, 0]
+
+
 def test_duplicate_center_sites_are_rejected(tmp_path):
     structure = make_two_site_structure()
     spec = tmp_path / "duplicate.json"
