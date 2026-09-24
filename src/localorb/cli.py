@@ -14,6 +14,7 @@ from .manual import build_manual_frame, resolve_site_selector
 from .orbitals import D_ORBITALS, d_rotation_matrix
 from .procar import save_rotated_procar_npz
 from .rotate import frame_alignment_error, rotate_structure_to_frame
+from .specfile import build_frames_from_spec_file
 from .vectors import build_vector_frame, parse_vector
 from .wannier import render_projection_block
 
@@ -72,8 +73,20 @@ def _add_vector_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--z-vector", help="Explicit local z direction in POSCAR Cartesian coordinates, e.g. 0,0,1")
 
 
+def _add_frames_file_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--frames-file",
+        default=None,
+        help=(
+            "JSON file defining multiple manual/vector/auto frames. When supplied, "
+            "it takes precedence over --provider and inline frame arguments."
+        ),
+    )
+
+
 def _common_frame_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("structure", help="Input structure readable by pymatgen, e.g. POSCAR")
+    _add_frames_file_arg(parser)
     parser.add_argument(
         "--provider",
         choices=["auto", "manual", "vectors"],
@@ -157,6 +170,10 @@ def _vector_frame_from_args(structure: Structure, args):
 
 def _frames_from_args(args):
     structure = Structure.from_file(args.structure)
+    if getattr(args, "frames_file", None):
+        frames = build_frames_from_spec_file(structure, args.frames_file)
+        return structure, frames
+
     if args.provider == "manual":
         return structure, [_manual_frame_from_args(structure, args)]
     if args.provider == "vectors":
@@ -179,6 +196,22 @@ def _frames_from_args(args):
 
 
 def _single_frame_from_args(structure: Structure, args):
+    if getattr(args, "frames_file", None):
+        frames = build_frames_from_spec_file(structure, args.frames_file)
+        frame_index = getattr(args, "frame_index", None)
+        if frame_index is None:
+            if len(frames) != 1:
+                raise SystemExit(
+                    f"--frames-file defines {len(frames)} frames; this command needs one. "
+                    "Choose one with --frame-index (0-based within the JSON frames array)."
+                )
+            return frames[0]
+        if not 0 <= frame_index < len(frames):
+            raise SystemExit(
+                f"--frame-index {frame_index} is outside the {len(frames)} frames in {args.frames_file}"
+            )
+        return frames[frame_index]
+
     if args.provider == "manual":
         return _manual_frame_from_args(structure, args)
     if args.provider == "vectors":
@@ -295,9 +328,6 @@ def cmd_wannier(args) -> int:
 
 def _write_rotated_poscar(structure: Structure, frame, output: Path) -> None:
     rotated = rotate_structure_to_frame(structure, frame)
-    # Always write a self-consistent Direct-coordinate POSCAR. This deliberately
-    # avoids the legacy bug where Cartesian input could rotate the lattice while
-    # leaving atomic Cartesian coordinates unchanged.
     Poscar(rotated).write_file(str(output), direct=True)
     print(f"Wrote {output}")
     print(f"Provider: {frame.provider}; mode: {frame.mode}")
@@ -314,7 +344,7 @@ def _mode_output_path(path: str, mode: str) -> Path:
 
 def cmd_rotate_poscar(args) -> int:
     structure = Structure.from_file(args.structure)
-    if args.provider == "manual" and args.both_manual_modes:
+    if not args.frames_file and args.provider == "manual" and args.both_manual_modes:
         for mode in ("fixed-z", "full-3d"):
             frame = _manual_frame_from_args(structure, args, mode=mode)
             _write_rotated_poscar(structure, frame, _mode_output_path(args.output, mode))
@@ -347,6 +377,13 @@ def cmd_procar(args) -> int:
 
 def _add_single_frame_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("structure")
+    _add_frames_file_arg(parser)
+    parser.add_argument(
+        "--frame-index",
+        type=int,
+        default=None,
+        help="0-based frame index within --frames-file for single-frame commands",
+    )
     parser.add_argument("--provider", choices=["auto", "manual", "vectors"], default="auto")
     parser.add_argument("--site", type=int, default=None, help="Auto provider: 0-based center site index")
     parser.add_argument("--ligand", default=None)
@@ -409,7 +446,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("rotate-poscar", help="Rigidly rotate a structure to one local frame")
     _add_single_frame_args(p)
-    p.add_argument("--both-manual-modes", action="store_true", help="For provider=manual, write fixed-z and full-3d outputs")
+    p.add_argument("--both-manual-modes", action="store_true", help="For inline provider=manual, write fixed-z and full-3d outputs")
     p.add_argument("-o", "--output", default="POSCAR.rotated")
     p.set_defaults(func=cmd_rotate_poscar)
 
