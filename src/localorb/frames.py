@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from itertools import combinations
+from dataclasses import dataclass, field
 from typing import Iterable
 
 import numpy as np
@@ -20,11 +19,16 @@ class LocalFrame:
     rotation_local_to_global: np.ndarray
     pair_indices: tuple[tuple[int, int], ...]
     pair_mean_distances: tuple[float, ...]
+    provider: str = "auto-octahedral"
+    mode: str = "full-3d"
+    metadata: dict[str, object] = field(default_factory=dict)
 
     def as_dict(self) -> dict:
         return {
             "site_index": self.site_index,
             "center_symbol": self.center_symbol,
+            "provider": self.provider,
+            "mode": self.mode,
             "ligand_indices": list(self.ligand_indices),
             "ligand_symbols": list(self.ligand_symbols),
             "x": self.x.tolist(),
@@ -34,6 +38,7 @@ class LocalFrame:
             "rotation_global_to_local": self.rotation_local_to_global.T.tolist(),
             "opposite_pairs": [list(p) for p in self.pair_indices],
             "pair_mean_distances": list(self.pair_mean_distances),
+            "metadata": self.metadata,
         }
 
 
@@ -188,6 +193,14 @@ def build_local_frame(
         rotation_local_to_global=R,
         pair_indices=global_pairs,
         pair_mean_distances=tuple(float(v) for v in mean_dist),
+        provider="auto-octahedral",
+        mode="full-3d",
+        metadata={
+            "coordination": int(coordination),
+            "ligand_filter": ligand,
+            "cutoff": cutoff,
+            "z_policy": z_policy,
+        },
     )
 
 
