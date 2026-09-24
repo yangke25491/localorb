@@ -22,6 +22,23 @@ def make_manual_structure():
     return Structure(lattice, species, cart, coords_are_cartesian=True)
 
 
+def make_rhombohedral_like_structure():
+    lattice = Lattice(
+        [
+            [1.0, 0.0, 0.0],
+            [0.6, 0.8, 0.0],
+            [-0.6, -0.3, np.sqrt(0.55)],
+        ]
+    )
+    species = ["Ni", "O", "O"]
+    frac = [
+        [0.20, 0.20, 0.20],
+        [0.32, 0.20, 0.20],
+        [0.20, 0.32, 0.20],
+    ]
+    return Structure(lattice, species, frac)
+
+
 def test_manual_full_3d_identity_axes():
     structure = make_manual_structure()
     frame = build_manual_frame(
@@ -49,6 +66,20 @@ def test_manual_fixed_z_projects_tilted_bond():
     assert np.allclose(frame.z, [0.0, 0.0, 1.0], atol=1e-12)
     assert np.allclose(frame.x, [1.0, 0.0, 0.0], atol=1e-12)
     assert np.allclose(frame.y, [0.0, 1.0, 0.0], atol=1e-12)
+
+
+def test_fixed_z_remains_poscar_z_under_vesta_working_frame():
+    structure = make_rhombohedral_like_structure()
+    frame = build_manual_frame(
+        structure,
+        center="Ni1",
+        x_atom="O1",
+        plane_atom="O2",
+        mode="fixed-z",
+        cartesian_frame="vesta",
+    )
+    assert np.allclose(frame.z, [0.0, 0.0, 1.0], atol=1e-12)
+    assert frame.metadata["fixed_z_reference"] == "poscar-cartesian-z"
 
 
 def test_vesta_style_selectors_and_explicit_image():
