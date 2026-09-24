@@ -143,6 +143,10 @@ def build_manual_frame(
     ``vesta`` enable the narrow rhombohedral/trigonal VESTA compatibility layer
     ported from the user's legacy rotation script. The final LocalFrame is always
     returned in the physical POSCAR Cartesian frame.
+
+    In ``fixed-z`` mode the physically fixed direction is always the POSCAR
+    Cartesian z axis. If a VESTA working frame is active, that physical z axis is
+    first expressed in the working frame, matching the legacy script's behavior.
     """
     if mode not in {"full-3d", "fixed-z"}:
         raise ValueError("mode must be 'full-3d' or 'fixed-z'")
@@ -177,7 +181,8 @@ def build_manual_frame(
         z_w = _unit(np.cross(x_w, y_w))
         y_w = _unit(np.cross(z_w, x_w))
     else:
-        z_w = np.array([0.0, 0.0, 1.0], dtype=float)
+        z_poscar = np.array([0.0, 0.0, 1.0], dtype=float)
+        z_w = _unit(z_poscar @ C)
         x_seed = x_vector - float(np.dot(x_vector, z_w)) * z_w
         x_w = _unit(x_seed)
         y_w = _unit(np.cross(z_w, x_w))
@@ -230,6 +235,7 @@ def build_manual_frame(
             "index_base": int(index_base),
             "cartesian_frame": resolved_cartesian_frame,
             "cartesian_transform": C.tolist(),
+            "fixed_z_reference": "poscar-cartesian-z" if mode == "fixed-z" else None,
             "plane_y_alignment": plane_alignment,
         },
     )
