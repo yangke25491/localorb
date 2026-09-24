@@ -4,10 +4,13 @@ import argparse
 import json
 from pathlib import Path
 
+import numpy as np
 from pymatgen.core import Structure
 from pymatgen.io.vasp import Poscar
 
 from .frames import build_frames_for_element, build_local_frame
+from .orbitals import D_ORBITALS, d_rotation_matrix
+from .procar import save_rotated_procar_npz
 from .rotate import frame_alignment_error, rotate_structure_to_frame
 from .wannier import render_projection_block
 
@@ -54,7 +57,7 @@ def cmd_inspect(args) -> int:
         print("  x =", " ".join(f"{v:+.8f}" for v in f.x))
         print("  y =", " ".join(f"{v:+.8f}" for v in f.y))
         print("  z =", " ".join(f"{v:+.8f}" for v in f.z))
-        print(f"  det(R) = {float(__import__('numpy').linalg.det(f.rotation_local_to_global)):.10f}")
+        print(f"  det(R) = {float(np.linalg.det(f.rotation_local_to_global)):.10f}")
     return 0
 
 
@@ -98,6 +101,32 @@ def cmd_rotate_poscar(args) -> int:
     return 0
 
 
+def cmd_d_matrix(args) -> int:
+    structure = Structure.from_file(args.structure)
+    frame = build_local_frame(
+        structure,
+        args.site,
+        ligand=args.ligand,
+        coordination=args.coordination,
+        cutoff=args.cutoff,
+        z_policy=args.z_policy,
+    )
+    T = d_rotation_matrix(frame.rotation_local_to_global)
+    print("orbital order:", " ".join(D_ORBITALS))
+    np.set_printoptions(precision=10, suppress=True)
+    print(T)
+    return 0
+
+
+def cmd_procar(args) -> int:
+    _, frames = _frames_from_args(args)
+    save_rotated_procar_npz(args.output, args.procar, frames)
+    print(f"Wrote {args.output}")
+    print("arrays: coefficients[spin,k,band,site,orbital], weights, site_indices, orbital_names, spin_values")
+    print("orbital order:", " ".join(D_ORBITALS))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="localorb",
@@ -130,6 +159,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--z-policy", choices=["longest", "shortest"], default="longest")
     p.add_argument("-o", "--output", default="POSCAR.rotated")
     p.set_defaults(func=cmd_rotate_poscar)
+
+    p = sub.add_parser("d-matrix", help="Print the 5x5 real-d orbital rotation matrix for one site")
+    p.add_argument("structure")
+    p.add_argument("--site", type=int, required=True)
+    p.add_argument("--ligand", default=None)
+    p.add_argument("--coordination", type=int, default=6)
+    p.add_argument("--cutoff", type=float, default=None)
+    p.add_argument("--z-policy", choices=["longest", "shortest"], default="longest")
+    p.set_defaults(func=cmd_d_matrix)
+
+    p = sub.add_parser("procar", help="Rotate phase-resolved PROCAR d amplitudes into local frames")
+    _common_frame_args(p)
+    p.add_argument("--procar", default="PROCAR", help="Path to phase-resolved PROCAR")
+    p.add_argument("-o", "--output", default="PROCAR_LOCAL.npz")
+    p.set_defaults(func=cmd_procar)
 
     return parser
 
