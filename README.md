@@ -4,6 +4,8 @@
 
 The project deliberately separates **how a local frame is defined** from **what the frame is used for**. A manually selected `Ni2 -> O4` frame, an automatically detected NiO6 frame, and an explicitly supplied pair of Cartesian axes all produce the same `LocalFrame` object and can feed the same downstream tools.
 
+For complete end-to-end examples, see [`docs/workflows.md`](docs/workflows.md). Release notes are in [`CHANGELOG.md`](CHANGELOG.md).
+
 ## Core model
 
 ```text
@@ -15,6 +17,7 @@ POSCAR / structure
        v
 R = [x' y' z']   (local -> POSCAR Cartesian)
        |
+       +--> validation / reproducibility report
        +--> Wannier90 local projections
        +--> rigid POSCAR rotation
        +--> real-d 5x5 rotation matrix
@@ -217,7 +220,30 @@ localorb inspect POSCAR \
   --center-atom Ni2 --x-atom O4 --plane-atom O7
 ```
 
-The output includes local axes, provider, mode, ligand information, and `det(R)`.
+The output includes local axes, provider, mode, ligand information, `det(R)`, and automatic geometry-quality metrics when available.
+
+## Validate frames and flag ambiguous automatic choices
+
+For a large supercell, validate before generating a production Wannier projection block:
+
+```bash
+localorb validate POSCAR \
+  --provider auto \
+  --center Ni --ligand O \
+  -o frame_validation.json
+```
+
+Automatic octahedral validation reports:
+
+```text
+max_opposition_error
+raw_axis_orthogonality_error
+z_gap_fraction
+```
+
+The first two quantify how close the selected ligand geometry is to three opposite orthogonal axes. `z_gap_fraction` measures how clearly the chosen z pair is distinguished from the nearest competing pair by mean bond length.
+
+A `WARN` does not automatically mean the frame is physically wrong. For example, a cubic octahedron naturally has nearly degenerate choices for which equivalent axis should be called z. Use `--strict` when you want warnings to produce a non-zero exit code for automated workflows.
 
 ## Export a reproducible JSON report
 
@@ -348,7 +374,7 @@ The NPZ output stores local-frame complex coefficients and weights without prete
 |---|---|
 | One common crystal orientation | `rotate-poscar` |
 | Different octahedral tilts at different sites | site-dependent `wannier` |
-| Large supercell / disorder | `provider auto` + validation |
+| Large supercell / disorder | `provider auto` + `validate` |
 | Physical ligand directions known | `provider manual` |
 | Crystallographic axes known analytically | `provider vectors` |
 | Existing VASP calculation, need local fatbands/PDOS | `procar` |
