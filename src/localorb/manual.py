@@ -6,6 +6,7 @@ import re
 import numpy as np
 from pymatgen.core import Structure
 
+from .compat_vesta import resolve_cartesian_transform
 from .frames import LocalFrame
 
 
@@ -101,10 +102,6 @@ def resolve_site_selector(structure: Structure, selector: str, index_base: int =
     )
 
 
-def _selection_frac_coords(structure: Structure, selection: SiteSelection) -> np.ndarray:
-    return np.asarray(structure[selection.site_index].frac_coords, dtype=float) + selection.image_shift
-
-
 def _nearest_image_shift(
     structure: Structure,
     center_frac: np.ndarray,
@@ -137,27 +134,15 @@ def build_manual_frame(
     mode: str = "full-3d",
     nearest_image: bool = True,
     index_base: int = 1,
+    cartesian_frame: str = "poscar",
 ) -> LocalFrame:
     """Build a local frame from three explicitly selected atoms.
 
-    Parameters
-    ----------
-    center
-        Center atom selector, e.g. ``Ni2`` or ``6``.
-    x_atom
-        Atom whose center->atom bond defines +x (full-3d), or whose in-plane
-        projection defines +x (fixed-z).
-    plane_atom
-        Second atom used to define the xy plane and the sign/orientation of y.
-    mode
-        ``full-3d`` constructs x from the selected bond, y by Gram-Schmidt from
-        the plane atom, and z=x×y. ``fixed-z`` keeps Cartesian z=(0,0,1),
-        projects the selected x bond into the xy plane, then sets y=z×x.
-    nearest_image
-        If true, selectors without an explicit ``@i,j,k`` image are moved to
-        the nearest periodic image relative to the selected center.
-    index_base
-        Base for bare integer selectors. Default 1 matches POSCAR/VESTA.
+    ``cartesian_frame`` controls only the working Cartesian coordinates used to
+    interpret the selected bonds. ``poscar`` is the safe default. ``auto`` and
+    ``vesta`` enable the narrow rhombohedral/trigonal VESTA compatibility layer
+    ported from the user's legacy rotation script. The final LocalFrame is always
+    returned in the physical POSCAR Cartesian frame.
     """
     if mode not in {"full-3d", "fixed-z"}:
         raise ValueError("mode must be 'full-3d' or 'fixed-z'")
@@ -177,31 +162,41 @@ def build_manual_frame(
         structure, plane_sel, center_frac=center_frac, nearest_image=nearest_image
     )
 
-    x_vector = x_cart - center_cart
-    plane_vector = plane_cart - center_cart
+    C, resolved_cartesian_frame = resolve_cartesian_transform(structure, cartesian_frame)
+    center_work = center_cart @ C
+    x_work = x_cart @ C
+    plane_work = plane_cart @ C
+
+    x_vector = x_work - center_work
+    plane_vector = plane_work - center_work
 
     if mode == "full-3d":
-        x = _unit(x_vector)
-        y_seed = plane_vector - float(np.dot(plane_vector, x)) * x
-        y = _unit(y_seed)
-        z = _unit(np.cross(x, y))
-        # Recompute y to make the frame exactly orthonormal and right handed.
-        y = _unit(np.cross(z, x))
+        x_w = _unit(x_vector)
+        y_seed = plane_vector - float(np.dot(plane_vector, x_w)) * x_w
+        y_w = _unit(y_seed)
+        z_w = _unit(np.cross(x_w, y_w))
+        y_w = _unit(np.cross(z_w, x_w))
     else:
-        z = np.array([0.0, 0.0, 1.0], dtype=float)
-        x_seed = x_vector - float(np.dot(x_vector, z)) * z
-        x = _unit(x_seed)
-        y = _unit(np.cross(z, x))
+        z_w = np.array([0.0, 0.0, 1.0], dtype=float)
+        x_seed = x_vector - float(np.dot(x_vector, z_w)) * z_w
+        x_w = _unit(x_seed)
+        y_w = _unit(np.cross(z_w, x_w))
 
+    # Row-vector convention: v_work = v_poscar @ C, therefore an axis expressed
+    # in the working frame maps back as axis_poscar = axis_work @ C.T.
+    x = _unit(x_w @ C.T)
+    y = _unit(y_w @ C.T)
+    z = _unit(z_w @ C.T)
     R = np.column_stack((x, y, z))
+
     if not np.allclose(R.T @ R, np.eye(3), atol=1e-10):
         raise ValueError("Constructed manual frame is not orthonormal")
     if not np.isclose(np.linalg.det(R), 1.0, atol=1e-10):
         raise ValueError("Constructed manual frame is not a proper right-handed rotation")
 
-    plane_projected = plane_vector - float(np.dot(plane_vector, z)) * z
+    plane_projected = plane_vector - float(np.dot(plane_vector, z_w)) * z_w
     if np.linalg.norm(plane_projected) > 1e-12:
-        plane_alignment = float(np.dot(_unit(plane_projected), y))
+        plane_alignment = float(np.dot(_unit(plane_projected), y_w))
     else:
         plane_alignment = float("nan")
 
@@ -233,6 +228,8 @@ def build_manual_frame(
             "plane_image": plane_shift.tolist(),
             "nearest_image": bool(nearest_image),
             "index_base": int(index_base),
+            "cartesian_frame": resolved_cartesian_frame,
+            "cartesian_transform": C.tolist(),
             "plane_y_alignment": plane_alignment,
         },
     )
