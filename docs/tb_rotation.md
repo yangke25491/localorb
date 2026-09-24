@@ -8,10 +8,18 @@ The central convention is:
 |new_a> = sum_m B[a,m] |old_m>
 ```
 
-so every real-space hopping block transforms as
+so for a general complex basis matrix every real-space hopping block transforms as
 
 ```text
-H_local(R) = B H_global(R) B^\dagger
+H_local(R) = B* H_global(R) B^T
+```
+
+where `B*` denotes element-wise complex conjugation and `B^T` the transpose.
+
+For the present spatial real-d rotations, `B` is real, so this reduces to
+
+```text
+H_local(R) = B H_global(R) B^T = B H_global(R) B^dagger
 ```
 
 The transformation is unitary when each transformed orbital block is complete.
@@ -134,10 +142,10 @@ The NPZ file stores the exact full basis matrix `B` plus JSON metadata describin
 
 ## Numerical checks
 
-`localorb` checks that the full basis matrix satisfies
+`localorb` checks that the row-wise basis coefficients are orthonormal:
 
 ```text
-B B^\dagger = I
+B B^dagger = I
 ```
 
 and reports the maximum unitarity error.
